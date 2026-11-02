@@ -91,30 +91,8 @@ namespace GtProxyMod.Features
             return SurgicalTools.TryGetValue(toolId, out var info) ? info.Name : $"Item {toolId}";
         }
 
-        public bool IsWithinReach(int targetTileX, int targetTileY)
-        {
-            if (targetTileX < 0 || targetTileY < 0) return false;
-
-            // Growtopia'da karakter konumu piksel cinsindendir (1 karo = 32 piksel)
-            float playerTileX = _engine.State.X / 32f;
-            float playerTileY = _engine.State.Y / 32f;
-
-            float dx = playerTileX - targetTileX;
-            float dy = playerTileY - targetTileY;
-            double distance = Math.Sqrt(dx * dx + dy * dy);
-
-            // Resmi sunucu erişim limiti normalde 3-4 karodur. 4.5 karo üstü doğrudan ban/flag sebebidir.
-            return distance <= 4.2;
-        }
-
         public void StartLoop(int toolId)
         {
-            if (TileX >= 0 && TileY >= 0 && !IsWithinReach(TileX, TileY))
-            {
-                _engine.SendClientMessage("`4[Autoclave Hata]`o Makineye çok uzaksınız! Lütfen makinenin yanına geçin (Shadow Ban Koruması).");
-                return;
-            }
-
             lock (_lock)
             {
                 _cts?.Cancel();
@@ -140,12 +118,6 @@ namespace GtProxyMod.Features
 
         public void StartStitchesMode()
         {
-            if (TileX >= 0 && TileY >= 0 && !IsWithinReach(TileX, TileY))
-            {
-                _engine.SendClientMessage("`4[Autoclave Hata]`o Makineye çok uzaksınız! Lütfen makinenin yanına geçin (Shadow Ban Koruması).");
-                return;
-            }
-
             lock (_lock)
             {
                 _cts?.Cancel();
@@ -310,7 +282,6 @@ namespace GtProxyMod.Features
                 // --- STITCHES MODU (1270 hariç 20+ olan aletlerden en yüksek sayıda olanı dönüştür) ---
                 if (IsStitchesMode)
                 {
-                    // 1270 (Stitches) hariç ve adedi en az 20 olan aletleri miktarına göre çoktan aza sırala
                     var bestTool = _knownInventory
                         .Where(k => k.Key != 1270 && k.Value >= 20)
                         .OrderByDescending(k => k.Value)

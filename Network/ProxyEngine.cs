@@ -548,26 +548,30 @@ namespace GtProxyMod.Network
                 {
                     if (packetType == TankPacketType.TileChangeReq)
                     {
-                        if ((now - _lastTileChangeTime).TotalMilliseconds < 180)
+                        if ((now - _lastTileChangeTime).TotalMilliseconds < Random.Shared.Next(180,250))
                             return true; // Seri vurma paketini filtrele
                         _lastTileChangeTime = now;
                     }
                 }
             }
 
-            // 2. GenericText / Diyalog Yanıt Koruması (Autoclave & Drop Flood Koruması)
-            else if ((NetMessageType)msgType == NetMessageType.GenericText || (NetMessageType)msgType == NetMessageType.GameMessage)
+            // 2. Yalnızca dialog_return paketlerini sınırla.
+            // action|drop normal oyuncu etkileşimidir; dialog zamanlayıcısıyla
+            // aynı sayaçta tutulursa drop işlemi autoclave yanıtını, autoclave
+            // yanıtı da drop işlemini yanlışlıkla engelleyebilir.
+            else if ((NetMessageType)msgType == NetMessageType.GenericText ||
+                     (NetMessageType)msgType == NetMessageType.GameMessage)
             {
                 string text = Encoding.UTF8.GetString(data);
-                if (text.Contains("action|dialog_return") || text.Contains("action|drop"))
+                if (text.Contains("action|dialog_return", StringComparison.Ordinal))
                 {
                     lock (_throttleLock)
                     {
-                        // DEĞİŞEN KISIM: 350 yerine 120 ms yapıldı
-                        if ((now - _lastDialogReturnTime).TotalMilliseconds < 120) 
+                        if ((now - _lastDialogReturnTime).TotalMilliseconds < Random.Shared.Next(400, 600))
                         {
-                            return true; // Aynı anda atılan paket kopyalarını engelle
+                            return true;
                         }
+
                         _lastDialogReturnTime = now;
                     }
                 }
