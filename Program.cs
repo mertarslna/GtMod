@@ -38,6 +38,7 @@ namespace GtProxyMod
             var commandManager = new CommandManager();
 
             // 3. Register Commands
+            commandManager.Register(new AutoFarmCommand());
             commandManager.Register(new HelpCommand());
             commandManager.Register(new GhostCommand());
             commandManager.Register(new WarpCommand());

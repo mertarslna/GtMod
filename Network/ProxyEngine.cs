@@ -18,6 +18,7 @@ namespace GtProxyMod.Network
         public CommandManager Commands { get; }
         public AutoclaveManager Autoclave { get; }
         public AutoSpamManager AutoSpam { get; }
+        public AutoFarmManager AutoFarm { get; }
 
         public string ActiveTargetIp { get; private set; } = "213.179.209.168";
         public ushort ActiveTargetPort { get; private set; } = 17203;
@@ -44,6 +45,7 @@ namespace GtProxyMod.Network
             Commands = commands;
             Autoclave = new AutoclaveManager(this);
             AutoSpam = new AutoSpamManager(this);
+            AutoFarm = new AutoFarmManager(this);
             ActiveTargetIp = config.TargetHost;
             ActiveTargetPort = config.TargetPort;
         }
@@ -338,6 +340,12 @@ namespace GtProxyMod.Network
             {
                 case NetMessageType.GamePacket:
                     var tank = TankPacket.FromBytes(data);
+
+                    if (tank.Type == TankPacketType.TileChangeReq)
+                    {
+                        AutoFarm.OnServerTilePacket(tank.Header.IntX, tank.Header.IntY, tank.Header.IntData);
+                    }
+
                     if (tank != null)
                     {
                         if (tank.Type == TankPacketType.CallFunction)
@@ -503,6 +511,7 @@ namespace GtProxyMod.Network
                     State.WorldPlayers.Clear();
                     Autoclave.Stop("Dünya değişti");
                     AutoSpam.Stop();
+                    AutoFarm.Stop("Dünya değişti");
                     Logger.Success($"Dünyaya giriş yapıldı: {worldName}");
                     SendClientOverlay($"Dünya: {worldName}");
                 }
@@ -580,13 +589,13 @@ namespace GtProxyMod.Network
             return false;
         }
 
-        public void SendToServer(byte[] data, PacketFlags flags = PacketFlags.Reliable)
+        public void SendToServer(byte[] data, PacketFlags flags = PacketFlags.Reliable, bool skipThrottle = false)
         {
             if (!State.IsServerConnected || _serverPeer.NativeData == IntPtr.Zero)
                 return;
 
             // Rate Limit Koruması: Shadow ban tetikleyecek seri paketleri filtrele
-            if (ShouldThrottlePacket(data))
+            if (!skipThrottle && ShouldThrottlePacket(data))
             {
                 return;
             }
