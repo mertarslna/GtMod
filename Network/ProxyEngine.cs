@@ -23,8 +23,8 @@ namespace GtProxyMod.Network
         public string ActiveTargetIp { get; private set; } = "213.179.209.168";
         public ushort ActiveTargetPort { get; private set; } = 17203;
 
-        private Host? _serverHost; // Receives connections from Growtopia Client
-        private Host? _clientHost; // Connects to official Growtopia Server
+        private Host? _serverHost; 
+        private Host? _clientHost; 
         private Peer _clientPeer;
         private Peer _serverPeer;
 
@@ -32,7 +32,6 @@ namespace GtProxyMod.Network
         private Task? _pollTask;
         private readonly object _sendLock = new();
 
-        // Flood & Shadow Ban Protection Fields
         private DateTime _lastItemActivateTime = DateTime.MinValue;
         private DateTime _lastTileChangeTime = DateTime.MinValue;
         private DateTime _lastDialogReturnTime = DateTime.MinValue;
@@ -54,19 +53,17 @@ namespace GtProxyMod.Network
         {
             _cts = new CancellationTokenSource();
 
-            // 1. Initialize ENet Server Host to accept local client connection
             var address = new Address { Port = Config.ListenPort };
 
             _serverHost = new Host();
             _serverHost.Create(address, 32, 2);
             _serverHost.EnableGrowtopiaServer();
 
-            // 2. Initialize ENet Client Host to communicate with official server
             _clientHost = new Host();
             _clientHost.Create(null, 32, 2);
             _clientHost.EnableGrowtopiaClient();
 
-            Logger.Success($"Proxy ENet Dinleyicisi 0.0.0.0:{Config.ListenPort} üzerinde hazır (Range Coder + CRC32 + NewPacket aktif).");
+            Logger.Success($"Proxy ENet Dinleyicisi 0.0.0.0:{Config.ListenPort} üzerinde hazır.");
             Logger.Info($"Varsayılan hedef Growtopia sunucusu: {ActiveTargetIp}:{ActiveTargetPort}");
 
             _pollTask = Task.Run(() => NetworkLoop(_cts.Token));
@@ -80,14 +77,12 @@ namespace GtProxyMod.Network
 
                 lock (_sendLock)
                 {
-                    // 1. Poll Server Host (From Client)
                     while (_serverHost.Service(0, out Event serverEvent) > 0)
                     {
                         polledWork = true;
                         HandleClientEvent(serverEvent);
                     }
 
-                    // 2. Poll Client Host (From Server)
                     while (_clientHost.Service(0, out Event clientEvent) > 0)
                     {
                         polledWork = true;
@@ -114,7 +109,6 @@ namespace GtProxyMod.Network
                     State.IsClientConnected = true;
                     Logger.Success($"Growtopia İstemcisi bağlandı! (IP: {_clientPeer.IP}:{_clientPeer.Port})");
 
-                    // Connect to target Growtopia Server
                     ConnectToTargetServer();
                     break;
 
@@ -134,10 +128,7 @@ namespace GtProxyMod.Network
 
                 case EventType.Disconnect:
                     if (netEvent.Peer.NativeData != _clientPeer.NativeData)
-                    {
-                        // Stale disconnect from previous peer during server transition
                         return;
-                    }
 
                     Logger.Warning("Growtopia İstemcisi bağlantıyı kesti.");
                     State.IsClientConnected = false;
@@ -149,14 +140,9 @@ namespace GtProxyMod.Network
 
         private void ConnectToTargetServer()
         {
-            // Clean up any existing server connection before connecting to a new target
             if (State.IsServerConnected || _serverPeer.NativeData != IntPtr.Zero)
             {
-                try
-                {
-                    _serverPeer.DisconnectNow(0);
-                }
-                catch { }
+                try { _serverPeer.DisconnectNow(0); } catch { }
                 State.IsServerConnected = false;
             }
 
@@ -198,15 +184,12 @@ namespace GtProxyMod.Network
                     {
                         var raw = textPacket.RawText;
 
-                        // Check login / name
                         var requestedName = textPacket.Get("requestedName");
                         if (!string.IsNullOrEmpty(requestedName))
                         {
                             State.LocalPlayerName = requestedName;
-                            Logger.Info($"Giriş yapan oyuncu adı: {requestedName}");
                         }
 
-                        // Check Chat Command
                         if (raw.Contains("action|input"))
                         {
                             var chatText = textPacket.Get("text");
@@ -219,12 +202,10 @@ namespace GtProxyMod.Network
 
                             if (!string.IsNullOrEmpty(chatText) && Commands.HandleChatInput(chatText, this, State))
                             {
-                                // Command was intercepted and handled locally! Do NOT forward to real server!
-                                return;
+                                return; 
                             }
                         }
 
-                        // Autoclave Client Interceptor
                         if (Autoclave.HandleClientTextPacket(raw))
                         {
                             return;
@@ -248,12 +229,9 @@ namespace GtProxyMod.Network
                             State.X = tank.Header.VecX;
                             State.Y = tank.Header.VecY;
 
-                            // Ghost mode interceptor
-                            if (State.GhostMode)
-                            {
-                                return;
-                            }
-
+                            if (State.GhostMode) return;
+                            
+                            // HAREKET LOGLAMASI EKLENDİ
                             if (Config.LogMovement)
                             {
                                 Logger.Client($"[State/Movement] Pos: ({State.X:F0}, {State.Y:F0})");
@@ -261,6 +239,7 @@ namespace GtProxyMod.Network
                         }
                         else
                         {
+                            // TANKPACKET LOGLAMASI EKLENDİ
                             if (Config.LogPackets)
                             {
                                 Logger.Client($"[TankPacket] Type: {tank.Type} (NetID: {tank.Header.NetId})");
@@ -269,12 +248,14 @@ namespace GtProxyMod.Network
                     }
                     break;
 
-                    case NetMessageType.Track:
-                    case NetMessageType.ClientLogResponse:
-                        Logger.Warning($"[CLIENT -> SERVER] [{netType} Telemetri Raporu Filtrelendi] Uzunluk: {data.Length} bayt");
-                        return; // Sunucuya rapor/izleme gitmesini engelle
+                case NetMessageType.Track:
+                case NetMessageType.ClientLogResponse:
+                    // SUNUCUYA TELEMETRİ GİTMESİNE İZİN VER
+                    Logger.Warning($"[CLIENT -> SERVER] [{netType} Telemetri Raporu İletiliyor] Uzunluk: {data.Length} bayt");
+                    break;
 
-                    default:
+                default:
+                    // DİĞER PAKETLERİN LOGLAMASI EKLENDİ
                     if (Config.LogPackets)
                     {
                         Logger.Client($"[{netType}] Uzunluk: {data.Length} bayt");
@@ -282,8 +263,8 @@ namespace GtProxyMod.Network
                     break;
             }
 
-            // Forward to server
-            SendToServer(data);
+            // DİKKAT: İstemciden gelen paketi SUNUCUYA iletiyoruz!
+            SendToServer(data, skipThrottle: true); // İstemcinin orijinal paketlerini throttle'a sokmuyoruz ki anti-cheat gecikmesin
         }
 
         #endregion
@@ -298,7 +279,7 @@ namespace GtProxyMod.Network
                     _serverPeer = netEvent.Peer;
                     _serverPeer.Timeout(0, 15000, 30000);
                     State.IsServerConnected = true;
-                    Logger.Success($"Resmi Growtopia sunucusuna başarıyla bağlandı! ({ActiveTargetIp}:{ActiveTargetPort})");
+                    Logger.Success($"Resmi Growtopia sunucusuna bağlandı! ({ActiveTargetIp}:{ActiveTargetPort})");
                     break;
 
                 case EventType.Receive:
@@ -316,13 +297,8 @@ namespace GtProxyMod.Network
                     break;
 
                 case EventType.Disconnect:
-                    if (netEvent.Peer.NativeData != _serverPeer.NativeData)
-                    {
-                        // Stale disconnect from older server peer during sub-server routing
-                        return;
-                    }
+                    if (netEvent.Peer.NativeData != _serverPeer.NativeData) return;
 
-                    Logger.Warning($"Growtopia sunucusu bağlantıyı kesti ({ActiveTargetIp}:{ActiveTargetPort}).");
                     State.IsServerConnected = false;
                     _serverPeer = default;
                     break;
@@ -355,7 +331,6 @@ namespace GtProxyMod.Network
                             {
                                 var func = vl.FunctionName;
 
-                                // Sub-Server Redirection (CRUCIAL for official Growtopia!)
                                 if (func.Equals("OnSendToServer", StringComparison.OrdinalIgnoreCase))
                                 {
                                     int subPort = vl.Get(1)?.AsInt() ?? (int)Config.ListenPort;
@@ -366,15 +341,11 @@ namespace GtProxyMod.Network
                                     var parts = serverString.Split('|');
                                     string targetIp = parts.Length > 0 ? parts[0] : Config.TargetHost;
 
-                                    Logger.Success($"[Sub-Server Yönlendirmesi Yakalandı!] Hedef: {targetIp}:{subPort} (Token: {token})");
-
-                                    // Save sub-server info for when client reconnects
                                     State.PendingSubServerIp = targetIp;
                                     State.PendingSubServerPort = (ushort)subPort;
                                     State.PendingSubServerToken = token;
                                     State.PendingSubServerUserId = userId;
 
-                                    // Modify the VariantList to redirect client to proxy
                                     parts[0] = "127.0.0.1";
                                     string modifiedServerString = string.Join('|', parts);
 
@@ -383,12 +354,9 @@ namespace GtProxyMod.Network
 
                                     byte[] newExtData = vl.Encode();
                                     var modifiedTank = new TankPacket(tank.Header, newExtData);
-                                    byte[] modifiedBytes = modifiedTank.ToBytes();
-
-                                    Logger.Proxy($"OnSendToServer -> İstemciye yönlendirme: 127.0.0.1:{Config.ListenPort} (orijinal header korundu, ext boyut: {newExtData.Length})");
-
-                                    SendToClient(modifiedBytes);
-                                    return; // Handled!
+                                    
+                                    SendToClient(modifiedTank.ToBytes());
+                                    return; 
                                 }
                                 else if (func.Equals("OnSpawn", StringComparison.OrdinalIgnoreCase))
                                 {
@@ -401,7 +369,6 @@ namespace GtProxyMod.Network
                                         if (spawnText.Contains("type|local") || nameStr.Equals(State.LocalPlayerName, StringComparison.OrdinalIgnoreCase))
                                         {
                                             State.LocalPlayerNetId = netId;
-                                            Logger.Success($"Yerel Oyuncu NetID tespit edildi: {netId}");
                                         }
                                         else if (!string.IsNullOrEmpty(nameStr))
                                         {
@@ -414,41 +381,21 @@ namespace GtProxyMod.Network
                                     var dialogContent = vl.Get(1)?.AsString() ?? string.Empty;
                                     if (Autoclave.HandleServerDialogRequest(dialogContent))
                                     {
-                                        return; // Intercepted and consumed by Autoclave! Do not forward to client.
+                                        return; 
                                     }
                                 }
                                 else if (func.Equals("OnConsoleMessage", StringComparison.OrdinalIgnoreCase) || func.Equals("OnTalkBubble", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    var msg1 = vl.Get(1)?.AsString() ?? string.Empty;
-                                    var msg2 = vl.Get(2)?.AsString() ?? string.Empty;
-                                    var combined = msg1 + " " + msg2;
+                                    var combined = (vl.Get(1)?.AsString() ?? "") + " " + (vl.Get(2)?.AsString() ?? "");
 
                                     if (combined.Contains("backpack space", StringComparison.OrdinalIgnoreCase) ||
-                                        combined.Contains("need more backpack", StringComparison.OrdinalIgnoreCase) ||
-                                        combined.Contains("inventory is full", StringComparison.OrdinalIgnoreCase) ||
-                                        combined.Contains("backpack is full", StringComparison.OrdinalIgnoreCase))
+                                        combined.Contains("inventory is full", StringComparison.OrdinalIgnoreCase))
                                     {
-                                        if (Autoclave.IsRunning)
-                                        {
-                                            Autoclave.HandleInventoryFull();
-                                        }
-                                    }
-                                }
-                                else if (func.Equals("OnTextOverlay", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    var msg = vl.Get(1)?.AsString() ?? string.Empty;
-                                    if (msg.Contains("backpack space", StringComparison.OrdinalIgnoreCase) ||
-                                        msg.Contains("need more backpack", StringComparison.OrdinalIgnoreCase) ||
-                                        msg.Contains("inventory is full", StringComparison.OrdinalIgnoreCase) ||
-                                        msg.Contains("backpack is full", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        if (Autoclave.IsRunning)
-                                        {
-                                            Autoclave.HandleInventoryFull();
-                                        }
+                                        if (Autoclave.IsRunning) Autoclave.HandleInventoryFull();
                                     }
                                 }
 
+                                // VARIANTLIST LOGLAMASI EKLENDİ
                                 if (Config.LogPackets && Config.LogVariantList)
                                 {
                                     Logger.Server($"[VariantList] {func} -> {vl}");
@@ -461,6 +408,7 @@ namespace GtProxyMod.Network
                         }
                         else if (tank.Type != TankPacketType.State && Config.LogPackets)
                         {
+                            // TANKPACKET LOGLAMASI EKLENDİ
                             Logger.Server($"[TankPacket] Type: {tank.Type}");
                         }
                     }
@@ -468,6 +416,7 @@ namespace GtProxyMod.Network
 
                 case NetMessageType.GenericText:
                 case NetMessageType.GameMessage:
+                    // TEXT PAKET LOGLAMASI EKLENDİ
                     if (Config.LogPackets && Config.LogTextPackets)
                     {
                         var tp = TextPacket.FromBytes(data);
@@ -480,12 +429,14 @@ namespace GtProxyMod.Network
                     }
                     break;
 
-                    case NetMessageType.Track:
-                    case NetMessageType.ClientLogRequest:
-                        Logger.Warning($"[SERVER -> PROXY] [{netType} Anti-Cheat Paketi Engellendi!] Uzunluk: {data.Length} bayt");
-                        return; // İstemciye bu telemetri sorgusunu iletme!
-
-                    default:
+                case NetMessageType.Track:
+                case NetMessageType.ClientLogRequest:
+                    // ANTİ-CHEAT SORGUSU İSTEMCİYE GİTSİN
+                    Logger.Warning($"[SERVER -> PROXY] [{netType} Anti-Cheat Sorgusu İletiliyor] Uzunluk: {data.Length}");
+                    break;
+                
+                default:
+                    // DİĞER PAKETLERİN LOGLAMASI EKLENDİ
                     if (Config.LogPackets)
                     {
                         Logger.Server($"[{netType}] {data.Length} bayt");
@@ -493,7 +444,6 @@ namespace GtProxyMod.Network
                     break;
             }
 
-            // Forward to client
             SendToClient(data);
         }
 
@@ -512,7 +462,7 @@ namespace GtProxyMod.Network
                     Autoclave.Stop("Dünya değişti");
                     AutoSpam.Stop();
                     AutoFarm.Stop("Dünya değişti");
-                    Logger.Success($"Dünyaya giriş yapıldı: {worldName}");
+                    Logger.Success($"Dünyaya giriş yapıldı: {worldName}"); // LOG EKLENDİ
                     SendClientOverlay($"Dünya: {worldName}");
                 }
             }
@@ -525,8 +475,7 @@ namespace GtProxyMod.Network
 
         public void SendToClient(byte[] data, PacketFlags flags = PacketFlags.Reliable)
         {
-            if (!State.IsClientConnected || _clientPeer.NativeData == IntPtr.Zero)
-                return;
+            if (!State.IsClientConnected || _clientPeer.NativeData == IntPtr.Zero) return;
 
             lock (_sendLock)
             {
@@ -548,7 +497,6 @@ namespace GtProxyMod.Network
             uint msgType = BitConverter.ToUInt32(data, 0);
             var now = DateTime.UtcNow;
 
-           // 1. TankPacket Koruması (Yumruk / Tile Değişimi)
             if ((NetMessageType)msgType == NetMessageType.GamePacket && data.Length >= 5)
             {
                 var packetType = (TankPacketType)data[4];
@@ -558,16 +506,11 @@ namespace GtProxyMod.Network
                     if (packetType == TankPacketType.TileChangeReq)
                     {
                         if ((now - _lastTileChangeTime).TotalMilliseconds < Random.Shared.Next(180,250))
-                            return true; // Seri vurma paketini filtrele
+                            return true; 
                         _lastTileChangeTime = now;
                     }
                 }
             }
-
-            // 2. Yalnızca dialog_return paketlerini sınırla.
-            // action|drop normal oyuncu etkileşimidir; dialog zamanlayıcısıyla
-            // aynı sayaçta tutulursa drop işlemi autoclave yanıtını, autoclave
-            // yanıtı da drop işlemini yanlışlıkla engelleyebilir.
             else if ((NetMessageType)msgType == NetMessageType.GenericText ||
                      (NetMessageType)msgType == NetMessageType.GameMessage)
             {
@@ -576,11 +519,10 @@ namespace GtProxyMod.Network
                 {
                     lock (_throttleLock)
                     {
-                        if ((now - _lastDialogReturnTime).TotalMilliseconds < Random.Shared.Next(400, 600))
+                        if ((now - _lastDialogReturnTime).TotalMilliseconds < 1000)
                         {
                             return true;
                         }
-
                         _lastDialogReturnTime = now;
                     }
                 }
@@ -591,14 +533,9 @@ namespace GtProxyMod.Network
 
         public void SendToServer(byte[] data, PacketFlags flags = PacketFlags.Reliable, bool skipThrottle = false)
         {
-            if (!State.IsServerConnected || _serverPeer.NativeData == IntPtr.Zero)
-                return;
+            if (!State.IsServerConnected || _serverPeer.NativeData == IntPtr.Zero) return;
 
-            // Rate Limit Koruması: Shadow ban tetikleyecek seri paketleri filtrele
-            if (!skipThrottle && ShouldThrottlePacket(data))
-            {
-                return;
-            }
+            if (!skipThrottle && ShouldThrottlePacket(data)) return;
 
             lock (_sendLock)
             {
@@ -635,11 +572,7 @@ namespace GtProxyMod.Network
         {
             if (_serverPeer.NativeData != IntPtr.Zero)
             {
-                try
-                {
-                    _serverPeer.DisconnectNow(0);
-                }
-                catch { }
+                try { _serverPeer.DisconnectNow(0); } catch { }
             }
             State.IsServerConnected = false;
         }

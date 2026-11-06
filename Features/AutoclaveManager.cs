@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using ENet;
 using GtProxyMod.Core;
 using GtProxyMod.Network;
 using GtProxyMod.Protocol;
@@ -50,9 +51,22 @@ namespace GtProxyMod.Features
             _engine = engine;
         }
 
-        private static int GetHumanizedDelay()
+        private static int GetHumanizedDelay(string actionType)
         {
-            return Random.Shared.Next(450, 650);
+            int baseDelay = actionType switch
+            {
+                "select_tool" => Random.Shared.Next(100, 250), // 300'e 500'dü
+                "verify"      => Random.Shared.Next(125, 200), // 250'ye 400'dü ve shadow ban yedirmiyordu.
+                _             => 0
+            };
+
+            // Çok nadir küçük bir sapma, sabit aralık oluşmasın diye
+            if (Random.Shared.Next(0, 100) < 5)
+            {
+                baseDelay += Random.Shared.Next(100, 250);
+            }
+
+            return baseDelay;
         }
 
         public static bool TryFindTool(string input, out int toolId, out string toolName)
@@ -104,16 +118,8 @@ namespace GtProxyMod.Features
             }
 
             var toolName = GetToolName(toolId);
-            _engine.SendClientMessage($"`2[Autoclave]`o `$ {toolName} ({toolId})`` seçildi! Otomasyon başladı.");
-            _engine.SendClientOverlay($"Autoclave: {toolName}");
-            Logger.Proxy($"[Autoclave] {toolName} ({toolId}) otomasyonu başlatıldı.");
-
-            // Pozisyon biliniyorsa doğrudan makineye vurarak başlat
-            if (TileX >= 0 && TileY >= 0)
-            {
-                var punchPacket = PacketBuilder.BuildTileChange(TileX, TileY, itemNetId: 18);
-                _engine.SendToServer(punchPacket.ToBytes());
-            }
+            _engine.SendClientMessage($"`2[Autoclave]`o `$ {toolName} ({toolId})`` otomasyonu hazır! Lütfen makineye VURUN.");
+            Logger.Proxy($"[Autoclave DEBUG] Tekli mod başlatıldı. Hedef: {toolId}. Makineye yumruk bekleniyor.");
         }
 
         public void StartStitchesMode()
@@ -129,44 +135,43 @@ namespace GtProxyMod.Features
                 TargetToolId = -1;
             }
 
-            _engine.SendClientMessage("`2[Autoclave]`o `$ STITCHES MODU AKTİF!``");
-            _engine.SendClientOverlay("Autoclave: STITCHES MODU");
-
-            if (TileX >= 0 && TileY >= 0)
-            {
-                var punchPacket = PacketBuilder.BuildTileChange(TileX, TileY, itemNetId: 18);
-                _engine.SendToServer(punchPacket.ToBytes());
-            }
+            _engine.SendClientMessage("`2[Autoclave]`o `$ STITCHES MODU AKTİF!`` Lütfen makineye VURUN.");
+            Logger.Proxy($"[Autoclave DEBUG] Stitches modu başlatıldı. Makineye yumruk bekleniyor.");
         }
 
         public void Stop(string reason = "")
         {
             lock (_lock)
             {
+                if (!IsRunning) return;
                 _cts?.Cancel();
                 _cts = null;
                 IsRunning = false;
                 IsStitchesMode = false;
             }
 
-            if (TileX >= 0 && TileY >= 0)
-            {
-                try
-                {
-                    var cancelPayload = $"action|dialog_return\ndialog_name|autoclave\ntilex|{TileX}|\ntiley|{TileY}|\nbuttonClicked|Cancel\n\n";
-                    _engine.SendToServer(PacketBuilder.BuildGenericText(cancelPayload));
-                }
-                catch { }
-            }
-
             var reasonStr = string.IsNullOrEmpty(reason) ? "" : $" ({reason})";
             _engine.SendClientMessage($"`4[Autoclave]`o Otomasyon durduruldu.{reasonStr}");
-            _engine.SendClientOverlay("Autoclave: DURDURULDU");
+            Logger.Proxy($"[Autoclave DEBUG] Stop() çağrıldı. Sebep: {reasonStr}");
         }
 
         public void HandleInventoryFull()
         {
-            Stop("Çanta tamamen doldu (Backpack space)");
+            Logger.Proxy($"[Autoclave DEBUG] HandleInventoryFull() tetiklendi. Çanta dolu.");
+            Stop("Çantanız tamamen dolu! (Backpack space)");
+        }
+
+        public void HandleServerStringMessage(string message)
+        {
+            if (!IsRunning || string.IsNullOrWhiteSpace(message)) return;
+
+            if (message.Contains("Sorry, you need more backpack space") ||
+                message.Contains("You don't have enough backpack space") ||
+                message.Contains("backpack is full"))
+            {
+                Logger.Proxy($"[Autoclave DEBUG] Sunucudan çanta dolu uyarısı alındı! Bot durduruluyor.");
+                HandleInventoryFull();
+            }
         }
 
         public bool HandleClientTextPacket(string raw)
@@ -184,24 +189,23 @@ namespace GtProxyMod.Features
                 var toolMatch = Regex.Match(raw, @"buttonClicked\|tool(?<id>\d+)");
                 if (toolMatch.Success && int.TryParse(toolMatch.Groups["id"].Value, out var clickedToolId))
                 {
-                    if (SurgicalTools.ContainsKey(clickedToolId))
-                    {
-                        var xMatch = Regex.Match(raw, @"(?:^|[\r\n|])tilex\|(?<x>\d+)");
-                        var yMatch = Regex.Match(raw, @"(?:^|[\r\n|])tiley\|(?<y>\d+)");
-                        if (xMatch.Success && int.TryParse(xMatch.Groups["x"].Value, out var x)) TileX = x;
-                        if (yMatch.Success && int.TryParse(yMatch.Groups["y"].Value, out var y)) TileY = y;
+                    var xMatch = Regex.Match(raw, @"(?:^|[\r\n|])tilex\|(?<x>\d+)");
+                    var yMatch = Regex.Match(raw, @"(?:^|[\r\n|])tiley\|(?<y>\d+)");
+                    if (xMatch.Success && int.TryParse(xMatch.Groups["x"].Value, out var x)) TileX = x;
+                    if (yMatch.Success && int.TryParse(yMatch.Groups["y"].Value, out var y)) TileY = y;
 
-                        if (IsEnabled)
+                    Logger.Proxy($"[Autoclave DEBUG] Oyuncu arayüzden Tool {clickedToolId} seçti. Koordinatlar güncellendi: X:{TileX} Y:{TileY}");
+
+                    if (IsEnabled)
+                    {
+                        if (IsStitchesMode)
                         {
-                            if (IsStitchesMode)
-                            {
-                                if (clickedToolId != 1270) TargetToolId = clickedToolId;
-                            }
-                            else
-                            {
-                                TargetToolId = clickedToolId;
-                                StartLoop(clickedToolId);
-                            }
+                            if (clickedToolId != 1270) TargetToolId = clickedToolId;
+                        }
+                        else
+                        {
+                            TargetToolId = clickedToolId;
+                            StartLoop(clickedToolId);
                         }
                     }
                 }
@@ -211,14 +215,17 @@ namespace GtProxyMod.Features
 
         public bool HandleServerDialogRequest(string dialog)
         {
-            if (string.IsNullOrWhiteSpace(dialog)) return false;
+            if (string.IsNullOrWhiteSpace(dialog) || !IsRunning) return false;
 
             // 1. Verify (Doğrulama) Penceresi Yakalama
-            if (IsRunning && dialog.Contains("end_dialog|autoclave") && dialog.Contains("add_button|verify|"))
+            if (dialog.Contains("end_dialog|autoclave") && dialog.Contains("add_button|verify|"))
             {
+                Logger.Proxy($"[Autoclave DEBUG] Verify diyaloğu SUNUCUDAN GELDİ.");
+
                 var itemMatch = Regex.Match(dialog, @"embed_data\|itemID\|(?<id>\d+)");
                 var xMatch = Regex.Match(dialog, @"embed_data\|tilex\|(?<x>\d+)");
                 var yMatch = Regex.Match(dialog, @"embed_data\|tiley\|(?<y>\d+)");
+
                 if (xMatch.Success && int.TryParse(xMatch.Groups["x"].Value, out var x)) TileX = x;
                 if (yMatch.Success && int.TryParse(yMatch.Groups["y"].Value, out var y)) TileY = y;
 
@@ -226,8 +233,8 @@ namespace GtProxyMod.Features
                 {
                     if (IsStitchesMode && verifyItemId == 1270)
                     {
-                        Stop("Stitches dönüştürülemez");
-                        return true;
+                        Stop("Stitches dönüştürülemez.");
+                        return false;
                     }
 
                     if (verifyItemId == TargetToolId || IsStitchesMode)
@@ -237,30 +244,52 @@ namespace GtProxyMod.Features
 
                         Task.Run(async () =>
                         {
-                            if (!await _dialogSemaphore.WaitAsync(0)) return;
+                            Logger.Proxy($"[Autoclave DEBUG] Semaphore bekleniyor (Verify için)...");
+
+                            bool acquired;
+                            try { acquired = await _dialogSemaphore.WaitAsync(3000, ct); }
+                            catch (OperationCanceledException) { return; }
+
+                            if (!acquired)
+                            {
+                                Stop("Verify diyaloğu zaman aşımına uğradı");
+                                return;
+                            }
+
                             try
                             {
-                                await Task.Delay(GetHumanizedDelay(), ct);
+                                int delay = GetHumanizedDelay("verify");
+                                Logger.Proxy($"[Autoclave DEBUG] Verify işlemi için {delay}ms bekleniyor...");
+                                await Task.Delay(delay, ct);
                                 if (!IsRunning || ct.IsCancellationRequested) return;
 
-                                var verifyPayload = $"action|dialog_return\ndialog_name|autoclave\ntilex|{TileX}|\ntiley|{TileY}|\nitemID|{TargetToolId}|\nbuttonClicked|verify\n\n";
-                                _engine.SendToServer(PacketBuilder.BuildGenericText(verifyPayload));
+                                var verifyPayload = $"action|dialog_return\ndialog_name|autoclave\ntilex|{TileX}|\ntiley|{TileY}|\nitemID|{TargetToolId}|\nbuttonClicked|verify\n";
+                                Logger.Proxy($"[Autoclave DEBUG] Verify paketi GÖNDERİLİYOR:\n{verifyPayload.Replace("\n", "\\n")}");
+
+                                _engine.SendToServer(PacketBuilder.BuildGenericText(verifyPayload), PacketFlags.Reliable, skipThrottle: true);
                             }
-                            catch { }
+                            catch (OperationCanceledException) { }
+                            catch (Exception ex)
+                            {
+                                Logger.Proxy($"[Autoclave DEBUG] Verify Exception: {ex.Message}");
+                            }
                             finally
                             {
                                 _dialogSemaphore.Release();
+                                Logger.Proxy($"[Autoclave DEBUG] Semaphore serbest bırakıldı (Verify).");
                             }
                         }, ct);
 
-                        return true;
+                        return true; // Diyaloğu gizle
                     }
                 }
             }
 
-            // 2. Autoclave Seçim Menüsü Yakalama & Basit Clave Döngüsü
+            // 2. Autoclave Ana Seçim Menüsü Yakalama
             if (dialog.Contains("end_dialog|autoclave") && dialog.Contains("With this device, you can exchange 20"))
             {
+                Logger.Proxy($"[Autoclave DEBUG] Ana Menü diyaloğu SUNUCUDAN GELDİ.");
+
                 var xMatch = Regex.Match(dialog, @"embed_data\|tilex\|(?<x>\d+)");
                 var yMatch = Regex.Match(dialog, @"embed_data\|tiley\|(?<y>\d+)");
                 if (xMatch.Success && int.TryParse(xMatch.Groups["x"].Value, out var x)) TileX = x;
@@ -277,9 +306,8 @@ namespace GtProxyMod.Features
                     }
                 }
 
-                if (!IsRunning) return false;
+                int chosenToolId = -1;
 
-                // --- STITCHES MODU (1270 hariç 20+ olan aletlerden en yüksek sayıda olanı dönüştür) ---
                 if (IsStitchesMode)
                 {
                     var bestTool = _knownInventory
@@ -287,71 +315,75 @@ namespace GtProxyMod.Features
                         .OrderByDescending(k => k.Value)
                         .FirstOrDefault();
 
-                    int chosenToolId = bestTool.Key > 0 ? bestTool.Key : -1;
-
-                    if (chosenToolId != -1)
-                    {
-                        TargetToolId = chosenToolId;
-                        CyclesCompleted++;
-                        var ct = _cts?.Token ?? CancellationToken.None;
-
-                        Task.Run(async () =>
-                        {
-                            if (!await _dialogSemaphore.WaitAsync(0)) return;
-                            try
-                            {
-                                await Task.Delay(GetHumanizedDelay(), ct);
-                                if (!IsRunning || ct.IsCancellationRequested) return;
-
-                                var selectPayload = $"action|dialog_return\ndialog_name|autoclave\ntilex|{TileX}|\ntiley|{TileY}|\nbuttonClicked|tool{chosenToolId}\n\n";
-                                _engine.SendToServer(PacketBuilder.BuildGenericText(selectPayload));
-                            }
-                            catch { }
-                            finally
-                            {
-                                _dialogSemaphore.Release();
-                            }
-                        }, ct);
-
-                        return true;
-                    }
-                    else
-                    {
-                        Stop("Dönüştürülecek alet kalmadı (Stok < 20)");
-                        return true;
-                    }
-                }
-
-                // --- TEK ALET MODU (Sadece seçilen alet 20+ ise dönüştür) ---
-                if (_knownInventory.TryGetValue(TargetToolId, out int remainingCount) && remainingCount >= 20)
-                {
-                    CyclesCompleted++;
-                    var ct = _cts?.Token ?? CancellationToken.None;
-
-                    Task.Run(async () =>
-                    {
-                        if (!await _dialogSemaphore.WaitAsync(0)) return;
-                        try
-                        {
-                            await Task.Delay(GetHumanizedDelay(), ct);
-                            if (!IsRunning || ct.IsCancellationRequested) return;
-
-                            var selectPayload = $"action|dialog_return\ndialog_name|autoclave\ntilex|{TileX}|\ntiley|{TileY}|\nbuttonClicked|tool{TargetToolId}\n\n";
-                            _engine.SendToServer(PacketBuilder.BuildGenericText(selectPayload));
-                        }
-                        catch { }
-                        finally
-                        {
-                            _dialogSemaphore.Release();
-                        }
-                    }, ct);
-
-                    return true;
+                    chosenToolId = bestTool.Key > 0 ? bestTool.Key : -1;
                 }
                 else
                 {
-                    Stop($"{GetToolName(TargetToolId)} stoğu bitti (Stok < 20)");
-                    return true;
+                    if (_knownInventory.TryGetValue(TargetToolId, out int remainingCount) && remainingCount >= 20)
+                    {
+                        chosenToolId = TargetToolId;
+                    }
+                }
+
+                if (chosenToolId != -1)
+                {
+                    TargetToolId = chosenToolId;
+                    CyclesCompleted++;
+                    Logger.Proxy($"[Autoclave DEBUG] Dönüştürülecek Alet: {TargetToolId} | Döngü: {CyclesCompleted}");
+
+                    var ct = _cts?.Token ?? CancellationToken.None;
+                    int toolToSelect = chosenToolId; // Task.Run içinde güvenli kullanım için yerel kopya
+
+                    Task.Run(async () =>
+                    {
+                        Logger.Proxy($"[Autoclave DEBUG] Semaphore bekleniyor (Ana Menü için)...");
+
+                        bool acquired;
+                        try { acquired = await _dialogSemaphore.WaitAsync(3000, ct); }
+                        catch (OperationCanceledException) { return; }
+
+                        if (!acquired)
+                        {
+                            Stop("Ana Menü diyaloğu zaman aşımına uğradı");
+                            return;
+                        }
+
+                        try
+                        {
+                            int delay = GetHumanizedDelay("select_tool");
+                            Logger.Proxy($"[Autoclave DEBUG] Alet seçimi için {delay}ms bekleniyor...");
+                            await Task.Delay(delay, ct);
+                            if (!IsRunning || ct.IsCancellationRequested) return;
+
+                            var selectPayload = $"action|dialog_return\ndialog_name|autoclave\ntilex|{TileX}|\ntiley|{TileY}|\nbuttonClicked|tool{toolToSelect}\n";
+                            Logger.Proxy($"[Autoclave DEBUG] Ana Menü Seçim paketi GÖNDERİLİYOR:\n{selectPayload.Replace("\n", "\\n")}");
+
+                            _engine.SendToServer(PacketBuilder.BuildGenericText(selectPayload), PacketFlags.Reliable, skipThrottle: true);
+                        }
+                        catch (OperationCanceledException) { }
+                        catch (Exception ex)
+                        {
+                            Logger.Proxy($"[Autoclave DEBUG] Ana Menü Exception: {ex.Message}");
+                        }
+                        finally
+                        {
+                            _dialogSemaphore.Release();
+                            Logger.Proxy($"[Autoclave DEBUG] Semaphore serbest bırakıldı (Ana Menü).");
+                        }
+                    }, ct);
+
+                    return true; // Diyaloğu gizle
+                }
+                else
+                {
+                    int lastTarget = TargetToolId;
+                    Stop($"Dönüştürülecek alet kalmadı veya stok < 20. TargetID: {lastTarget}");
+
+                    var cancelPayload = $"action|dialog_return\ndialog_name|autoclave\ntilex|{TileX}|\ntiley|{TileY}|\nbuttonClicked|Cancel\n";
+                    Logger.Proxy($"[Autoclave DEBUG] Cancel paketi GÖNDERİLİYOR:\n{cancelPayload.Replace("\n", "\\n")}");
+                    _engine.SendToServer(PacketBuilder.BuildGenericText(cancelPayload), PacketFlags.Reliable, skipThrottle: true);
+
+                    return true; // Diyaloğu oyuncuya gösterme
                 }
             }
 
